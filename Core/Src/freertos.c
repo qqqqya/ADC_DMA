@@ -32,6 +32,7 @@
 // #include <stdlib.h>
 #include "task.h"   // 任务通知函数  xTaskNotifyFromISR  MAX_DELAY
 #include "queue.h"   // 队列
+#include "semphr.h"  // 信号量
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -57,14 +58,16 @@ void Output_logTask(void *arg);
 
 // ADC_HandleTypeDef hadc1;
 // DMA_HandleTypeDef hdma_adc1;
+#if 1
 uint8_t g_buf_flag=which_buf1;
   uint32_t *p_g_buf1 = NULL;
   uint32_t *p_g_buf2 = NULL;
 
   QueueHandle_t xMailbox;
+  SemaphoreHandle_t xSemaphore;//aka  QueueHandle_t
 void myadc_dma_init(void){
 
-// 注意：ADC通常�?12位或16位，建议�? uint16_t 节省内存并匹�?
+// 注意：ADC通常�??12位或16位，建议�?? uint16_t 节省内存并匹�??
   p_g_buf1 = (uint32_t *)malloc(sizeof(uint32_t)*buffer_size);
   p_g_buf2 = (uint32_t *)malloc(sizeof(uint32_t)*buffer_size);
   if(p_g_buf1&&p_g_buf2){
@@ -74,9 +77,24 @@ void myadc_dma_init(void){
     memset(p_g_buf1,0xff,sizeof(uint32_t)*buffer_size);
      memset(p_g_buf2,0xff,sizeof(uint32_t)*buffer_size);  
   }
+  /**创建信号量 */
+   // xSemaphore=xSemaphoreCreateMutex();
 
+   xSemaphore=xSemaphoreCreateBinary();
+	xSemaphoreGive(xSemaphore);
+  ///////-----------
   xMailbox=xQueueCreate(1, sizeof(uint8_t));//创建邮箱 大小uint8_t g_buf_flag
 }
+#endif
+
+#if 0
+/**新方法�?�过�?个数组切换buf 
+ * �?个数组两�?32位buf 半中断触�?--全中段也触发
+*/
+uint32_t buf[buffer_size*2];
+
+#endif
+
 /***
  *   * @brief  Starts the multi_buffer DMA Transfer.
  * HAL_DMAEx_MultiBufferStart
@@ -98,8 +116,8 @@ const osThreadAttr_t Output_logTask_attributes = {
   .name = "Output_logTask",
   .stack_size = 128 * 4,
   .priority = (osPriority_t) osPriorityBelowNormal,//osPriorityBelowNormal
-};  //用邮箱的时候会出错--难道是用队列就要修改优先级？
-////优先�?---
+};  //用邮箱的时�?�会出错--难道是用队列就要修改优先级？
+////优先�??---
 
 
 
@@ -110,16 +128,14 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc)
   log_i("HAL_ADC_ConvCpltCallback running---------------");
   /**adc 传输完成回调 */
   if(hadc->Instance == ADC1){
+    //转存数据--
+    uint8_t completed_flag=g_buf_flag;
     // 切换buf
-    if(g_buf_flag == which_buf1){
-      g_buf_flag=which_buf2;
-    }
-    else{
-      g_buf_flag=which_buf1;
-    }
+    if(g_buf_flag == which_buf1)      g_buf_flag=which_buf2;
+    else      g_buf_flag=which_buf1;
     
-    xTaskNotifyFromISR( Output_logTaskHandle, g_buf_flag ,eSetValueWithOverwrite,0 );
-    ///覆写 通知�?=uvalue
+    xTaskNotifyFromISR( Output_logTaskHandle, completed_flag ,eSetValueWithOverwrite,0 );
+    ///覆写 通知�??=uvalue
     /**
      *     vTaskNotifyGiveFromISR( Output_logTaskHandle, NULL );
      * 高级通知函数
@@ -127,12 +143,15 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc)
                                uint32_t ulValue, 
                                eNotifyAction eAction, 
                                BaseType_t *pxHigherPriorityTaskWoken );
-     *ulValue	怎么使用ulValue，由eAction参数决定   eAction	见下�?   返回�?	pdPASS：成功，大部分调用都会成�? 
+     *ulValue	怎么使用ulValue，由eAction参数决定   eAction	见下�??   返回�??	pdPASS：成功，大部分调用都会成�?? 
      */
     /**
-     * 用邮�?  读取不删�?  只能覆盖 */
-    // xQueueOverwriteFromISR(xMailbox, &g_buf_flag, 0);
+     * 用邮�??  读取不删�??  只能覆盖 */
+    // xQueueOverwriteFromISR(xMailbox, &completed_flag, 0);
 
+    // 发信号量完成  解锁------不在这里解锁
+    // xSemaphoreGiveFromISR(xSemaphore,NULL);
+    
   }
 }
 
@@ -175,9 +194,9 @@ void MX_FREERTOS_Init(void) {
   /* USER CODE BEGIN RTOS_THREADS */
   
   /**应当有三个线程，
-   * �?个默认线程，初始�?
-   * �?个切换buffer线程�?
-   * �?个处理数�?--convert voltage 线程 
+   * �??个默认线程，初始�??
+   * �??个切换buffer线程�??
+   * �??个处理数�??--convert voltage 线程 
    * */
   Output_logTaskHandle = osThreadNew(Output_logTask, NULL, &Output_logTask_attributes);
   // ConvertVoltageTaskHandle = osThreadNew(ConvertVoltageTask, NULL, &ConvertVoltageTask_attributes);
@@ -200,19 +219,19 @@ void MX_FREERTOS_Init(void) {
 /* USER CODE END Header_StartDefaultTask */
 void StartDefaultTask(void *argument)
 {
-	osDelay(500);
   /* USER CODE BEGIN StartDefaultTask */
   log_i("StartDefaultTask runninggggggggggggggg");
   myadc_dma_init();
 
-  /** adc cfile中
-   *   hadc1.Init.ContinuousConvMode = ENABLE;//连续转换模式，开启后，转换完成后会自动启动下一个转换
+  /** adc cfile�?
+   *   hadc1.Init.ContinuousConvMode = ENABLE;//连续转换模式，开启后，转换完成后会自动启动下�?个转�?
    * HAL_ADC_Start_DMA(&hadc1, (uint32_t*)p_g_buf1, buffer_size);
    */
 
   /* Infinite loop */
   for(;;)
-  {
+  {// 发信号量完成  加锁
+    xSemaphoreTake(xSemaphore, portMAX_DELAY);
     ////循环切换buffer
     if(g_buf_flag==which_buf1){
     // 选择buf1
@@ -226,7 +245,11 @@ void StartDefaultTask(void *argument)
     }
 //    HAL_GPIO_TogglePin(LED_Test_GPIO_Port,LED_Test_Pin);
   //  osDelay(500);
-    osDelay(10);
+
+  
+  xSemaphoreGive(xSemaphore);
+    osDelay(100);
+    
   }
   /* USER CODE END StartDefaultTask */
 }
@@ -234,41 +257,51 @@ void StartDefaultTask(void *argument)
 /* Private application code --------------------------------------------------*/
 /* USER CODE BEGIN Application */
 void Output_logTask(void *arg){
-  
+//  osDelay(100);
   /**切换buffer线程 */
   log_i("Output_logTask running---------------");
   uint32_t recvValue = 0;
   BaseType_t Notifyret = pdPASS;    
   while(1){
-    // Notifyret = xQueuePeek( xMailbox, &recvValue,  0);//portMAX_DELAY
-  Notifyret = xTaskNotifyWait(0,0,&recvValue,portMAX_DELAY);//发过来的通知�? �? buf_flag
-                                                    //接收的�?�知�?
-  if(Notifyret==pdPASS){
-    log_i("Notifyret=pdPASS!!!");
-    ////打印buffer中数�?
-    if(recvValue==which_buf1){
 
-       log_d("buffer1===========");
-       for(int i=0;i<buffer_size;i++){
-        log_d("buf1[%d]=%d",i+1,p_g_buf1[i]);        
+    // 发信号量完成  加锁
+  // if(xSemaphoreTake(xSemaphore, portMAX_DELAY)==pdTRUE){
+    // Notifyret = xQueuePeek( xMailbox, &recvValue,  portMAX_DELAY);//portMAX_DELAY
+  Notifyret = xTaskNotifyWait(0,0,&recvValue,portMAX_DELAY);//发过来的通知�?? �?? buf_flag
+                                                    //接收的�?�知�??
+      if(Notifyret==pdPASS){
+        
+        xSemaphoreTake(xSemaphore, portMAX_DELAY);
+        log_i("Notifyret=pdPASS!!!");
+        ////打印buffer中数�??
+        if(recvValue==which_buf1){
+
+          log_d("buffer1===========");
+          for(int i=0;i<buffer_size;i++){
+            log_d("buf1[%d]=%d",i+1,p_g_buf1[i]);        
+          }
+            log_d("buf2[%d]=%d",77,p_g_buf1[buffer_size-1]);
+
+        }
+
+        else{
+          log_d("buffer2------------");
+
+          for(int i=0;i<buffer_size;i++){
+            log_d("buf2[%d]=%d",i+1,p_g_buf2[i]);
+          }
+            log_d("buf2[%d]=%d",77,p_g_buf2[buffer_size-1]);
+        }
+        // 发信号量完成  解锁
+        xSemaphoreGive(xSemaphore);
       }
-        log_d("buf2[%d]=%d",77,p_g_buf1[buffer_size-1]);
-
-    }
-
-    else{
-       log_d("buffer2------------");
-
-       for(int i=0;i<buffer_size;i++){
-        log_d("buf2[%d]=%d",i+1,p_g_buf2[i]);
+      
+      else{
+        log_e("Notifyret!=pdPASS");xSemaphoreGive(xSemaphore);
       }
-        log_d("buf2[%d]=%d",77,p_g_buf2[buffer_size-1]);
-    }
-  }
-  else{
-    log_e("Notifyret!=pdPASS");
-  }
+
+
 }
-}
+  }
 /* USER CODE END Application */
 

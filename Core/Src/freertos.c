@@ -54,7 +54,9 @@ void Output_logTask(void *arg);
 /* USER CODE BEGIN Variables */
 #define which_buf1 0
 #define which_buf2 1
-#define buffer_size 4
+#define buffer_size 1
+uint32_t produce_evt = 0;
+uint32_t consume_evt = 0;
 
 // ADC_HandleTypeDef hadc1;
 // DMA_HandleTypeDef hdma_adc1;
@@ -133,8 +135,10 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc)
     // 切换buf
     if(g_buf_flag == which_buf1)      g_buf_flag=which_buf2;
     else      g_buf_flag=which_buf1;
+    //send notify to Output_logTask--consume---实际上应该发给produce--告诉发送完毕
+    // xTaskNotifyFromISR( Output_logTaskHandle, completed_flag ,eSetValueWithOverwrite,0 );
+    xTaskNotifyFromISR( defaultTaskHandle, completed_flag ,eSetValueWithOverwrite,0 );
     
-    xTaskNotifyFromISR( Output_logTaskHandle, completed_flag ,eSetValueWithOverwrite,0 );
     ///覆写 通知�??=uvalue
     /**
      *     vTaskNotifyGiveFromISR( Output_logTaskHandle, NULL );
@@ -218,11 +222,12 @@ void MX_FREERTOS_Init(void) {
   */
 /* USER CODE END Header_StartDefaultTask */
 void StartDefaultTask(void *argument)
-{
+{//切换buffer线程--produce
   /* USER CODE BEGIN StartDefaultTask */
   log_i("StartDefaultTask runninggggggggggggggg");
   myadc_dma_init();
 
+  
   /** adc cfile�?
    *   hadc1.Init.ContinuousConvMode = ENABLE;//连续转换模式，开启后，转换完成后会自动启动下�?个转�?
    * HAL_ADC_Start_DMA(&hadc1, (uint32_t*)p_g_buf1, buffer_size);
@@ -230,24 +235,31 @@ void StartDefaultTask(void *argument)
 
   /* Infinite loop */
   for(;;)
-  {// 发信号量完成  加锁
-    xSemaphoreTake(xSemaphore, portMAX_DELAY);
-    ////循环切换buffer
-    if(g_buf_flag==which_buf1){
-    // 选择buf1
+  {
+    
     log_i("buf111111111111"); // 启动ADC+DMA双缓冲传  ?
      HAL_ADC_Start_DMA(&hadc1, (uint32_t*)p_g_buf1, buffer_size);
+    /***等待通知---中断中发给produce 任务的handler 
+     * --通知DMA传输完成，
+     * 如果consumedd--bufer为空--切换buff */
+    if(pdPASS==xTaskNotifyWait(0,0,&produce_evt,portMAX_DELAY)){
+      xTaskNotifyGive(Output_logTaskHandle);//给哪个任务发通知
+      // xTaskNotifyGive(Output_logTaskHandle);
+      //notice consumer produced done
     }
-  else{
-    // 选择buf2
+    //wait 等消费者消耗结束
+    if(consume_evt){
+    // wait for consume---消耗结束
+        xSemaphoreTake(xSemaphore, portMAX_DELAY);
+        xSemaphoreGive(xSemaphore);
+    }
+    
+    ////循环切换buffer
     log_i("buf222222222222"); // 启动ADC+DMA双缓冲传  ?
      HAL_ADC_Start_DMA(&hadc1, (uint32_t*)p_g_buf2, buffer_size);
-    }
+
 //    HAL_GPIO_TogglePin(LED_Test_GPIO_Port,LED_Test_Pin);
   //  osDelay(500);
-
-  
-  xSemaphoreGive(xSemaphore);
     osDelay(100);
     
   }
@@ -257,51 +269,31 @@ void StartDefaultTask(void *argument)
 /* Private application code --------------------------------------------------*/
 /* USER CODE BEGIN Application */
 void Output_logTask(void *arg){
-//  osDelay(100);
-  /**切换buffer线程 */
+// 处理数-convert voltage 线程 ---output log-- consume
   log_i("Output_logTask running---------------");
-  uint32_t recvValue = 0;
   BaseType_t Notifyret = pdPASS;    
   while(1){
 
     // 发信号量完成  加锁
   // if(xSemaphoreTake(xSemaphore, portMAX_DELAY)==pdTRUE){
     // Notifyret = xQueuePeek( xMailbox, &recvValue,  portMAX_DELAY);//portMAX_DELAY
-  Notifyret = xTaskNotifyWait(0,0,&recvValue,portMAX_DELAY);//发过来的通知�?? �?? buf_flag
-                                                    //接收的�?�知�??
+  Notifyret = xTaskNotifyWait(0,0,&consume_evt,portMAX_DELAY);//produce send notify
       if(Notifyret==pdPASS){
         
         xSemaphoreTake(xSemaphore, portMAX_DELAY);
-        log_i("Notifyret=pdPASS!!!");
-        ////打印buffer中数�??
-        if(recvValue==which_buf1){
-
-          log_d("buffer1===========");
-          for(int i=0;i<buffer_size;i++){
-            log_d("buf1[%d]=%d",i+1,p_g_buf1[i]);        
-          }
-            log_d("buf2[%d]=%d",77,p_g_buf1[buffer_size-1]);
-
+        //cosume buffer
+        for(int i=0;i<2;i++){
+          if(i==0)        log_d("buf%d=%d",i+1,p_g_buf1[0]);           
+          else            log_d("buf%d=%d",i+1,p_g_buf2[0]);           
         }
-
-        else{
-          log_d("buffer2------------");
-
-          for(int i=0;i<buffer_size;i++){
-            log_d("buf2[%d]=%d",i+1,p_g_buf2[i]);
-          }
-            log_d("buf2[%d]=%d",77,p_g_buf2[buffer_size-1]);
-        }
+        ulTaskNotifyValueClear(NULL, 0xffffffff);//清除通知
         // 发信号量完成  解锁
-        xSemaphoreGive(xSemaphore);
+        xSemaphoreGive(xSemaphore);  
       }
-      
-      else{
-        log_e("Notifyret!=pdPASS");xSemaphoreGive(xSemaphore);
+           
       }
-
 
 }
-  }
+
 /* USER CODE END Application */
 
